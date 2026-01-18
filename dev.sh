@@ -66,15 +66,57 @@ for i in {1..30}; do
     sleep 1
 done
 
-# Pre-load model into VRAM using API (more reliable than interactive mode)
-echo "Loading model into VRAM..."
-curl -s http://localhost:11434/api/generate -d "{
-  \"model\": \"$MODEL\",
-  \"prompt\": \"hi\",
-  \"stream\": false,
-  \"options\": {\"num_predict\": 1}
-}" >/dev/null 2>&1
-echo "Model loaded."
+# Function to load model with timeout and retries
+load_model() {
+    local max_attempts=3
+    local timeout_secs=120
+
+    for attempt in $(seq 1 $max_attempts); do
+        echo "Loading model into VRAM (attempt $attempt/$max_attempts)..."
+
+        # Use timeout on curl to prevent hanging
+        if timeout $timeout_secs curl -s http://localhost:11434/api/generate -d "{
+          \"model\": \"$MODEL\",
+          \"prompt\": \"hi\",
+          \"stream\": false,
+          \"options\": {\"num_predict\": 1}
+        }" >/dev/null 2>&1; then
+            echo "Model loaded successfully."
+            return 0
+        else
+            echo "Model load failed or timed out."
+            if [ $attempt -lt $max_attempts ]; then
+                echo "Restarting ollama and retrying..."
+                pkill -9 -f "ollama" 2>/dev/null
+                wait 2>/dev/null
+                sleep 2
+                ollama serve &>/dev/null &
+                sleep 3
+                # Wait for ollama API
+                for i in {1..30}; do
+                    if curl -s --max-time 5 http://localhost:11434/api/tags >/dev/null 2>&1; then
+                        break
+                    fi
+                    sleep 1
+                done
+            fi
+        fi
+    done
+
+    echo "ERROR: Failed to load model after $max_attempts attempts"
+    return 1
+}
+
+# Function to check if ollama is responsive
+check_ollama_health() {
+    curl -s --max-time 5 http://localhost:11434/api/tags >/dev/null 2>&1
+}
+
+# Load the model
+if ! load_model; then
+    echo "Could not load model. Exiting."
+    exit 1
+fi
 echo ""
 
 SESSION=0
@@ -116,8 +158,24 @@ After fixing, run the build command to verify.
         BUILD_STATUS_MSG=""
     fi
 
+    # Pre-flight check: ensure ollama is healthy before starting aider
+    if ! check_ollama_health; then
+        echo "⚠ Ollama not responding, restarting..."
+        pkill -9 -f "ollama" 2>/dev/null
+        wait 2>/dev/null
+        sleep 2
+        ollama serve &>/dev/null &
+        sleep 3
+        if ! load_model; then
+            echo "Failed to restart ollama, skipping this session..."
+            sleep 5
+            continue
+        fi
+    fi
+
     # Don't pre-load source files - let aider discover via repo map
-    aider \
+    # Use timeout to prevent indefinite hangs (15 minutes max per session)
+    timeout 900 aider \
         "$INSTRUCTIONS_FILE" \
         --message "
 $BUILD_STATUS_MSG
@@ -144,13 +202,22 @@ Use WHOLE edit format - output complete file contents.
 
     EXIT_CODE=$?
 
-    # If aider crashed (OOM, etc), restart ollama to clear VRAM
+    # If aider timed out (exit 124) or crashed, restart ollama to clear VRAM
+    if [ $EXIT_CODE -eq 124 ]; then
+        echo ""
+        echo "⚠ Aider session timed out (15 min limit). Likely ollama hung."
+        echo "Killing aider and restarting ollama..."
+        pkill -9 -f "aider" 2>/dev/null
+    fi
+
     if [ $EXIT_CODE -ne 0 ]; then
         echo ""
-        echo "Aider exited with error ($EXIT_CODE). Restarting ollama..."
+        echo "Aider exited with code $EXIT_CODE. Restarting ollama..."
+
+        # Kill all ollama processes and reap zombies
         pkill -9 -f "ollama" 2>/dev/null
         wait 2>/dev/null
-        sleep 1
+        sleep 2
 
         # Wait for live processes to die (max 10 seconds)
         for i in {1..10}; do
@@ -161,29 +228,10 @@ Use WHOLE edit format - output complete file contents.
             sleep 1
         done
 
-        # Start fresh instance
+        # Start fresh instance and load model using the robust function
         ollama serve &>/dev/null &
         sleep 3
-
-        # Wait for ollama to be ready
-        echo "Waiting for ollama..."
-        for i in {1..30}; do
-            if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-                echo "Ollama is ready."
-                break
-            fi
-            sleep 1
-        done
-
-        # Load the model using API
-        echo "Loading model into VRAM..."
-        curl -s http://localhost:11434/api/generate -d "{
-          \"model\": \"$MODEL\",
-          \"prompt\": \"hi\",
-          \"stream\": false,
-          \"options\": {\"num_predict\": 1}
-        }" >/dev/null 2>&1
-        echo "Model loaded."
+        load_model
     fi
 
     COMMITS_AFTER=$(git rev-list --count HEAD 2>/dev/null || echo "0")
