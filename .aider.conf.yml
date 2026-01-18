@@ -1,4 +1,5 @@
 model: ollama/qwen3-30b-aider:latest
+model-metadata-file: .aider.model.metadata.json
 edit-format: whole
 yes-always: true
 auto-commits: true
