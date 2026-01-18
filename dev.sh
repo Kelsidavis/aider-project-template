@@ -24,10 +24,32 @@ echo "Starting continuous development..."
 echo "Press Ctrl+C to stop"
 echo ""
 
-# Kill any zombie ollama processes before starting
-echo "Cleaning up any existing ollama processes..."
+# Kill any existing ollama/aider processes and reap zombies
+echo "Cleaning up any existing processes..."
 pkill -9 -f "ollama" 2>/dev/null
-sleep 2
+pkill -9 -f "aider" 2>/dev/null
+
+# Reap any zombie children from this shell
+wait 2>/dev/null
+
+# Wait for live (non-zombie) processes to die
+for i in {1..10}; do
+    LIVE_OLLAMA=$(pgrep -f "ollama" | xargs -r ps -o pid=,state= -p 2>/dev/null | grep -v " Z" | wc -l)
+    if [ "$LIVE_OLLAMA" -eq 0 ]; then
+        break
+    fi
+    echo "Waiting for $LIVE_OLLAMA ollama process(es) to terminate..."
+    pkill -9 -f "ollama" 2>/dev/null
+    sleep 1
+done
+
+# Orphan any remaining zombies by killing their parent shells (stopped dev.sh instances)
+ZOMBIE_COUNT=$(ps aux | grep -E 'ollama|aider' | grep ' Z ' | wc -l)
+if [ "$ZOMBIE_COUNT" -gt 0 ]; then
+    echo "Cleaning up $ZOMBIE_COUNT zombie process(es)..."
+    ps aux | grep 'dev.sh' | grep ' T ' | awk '{print $2}' | xargs -r kill -9 2>/dev/null
+    sleep 1
+fi
 
 # Start fresh ollama instance
 echo "Starting ollama..."
@@ -44,9 +66,15 @@ for i in {1..30}; do
     sleep 1
 done
 
-# Pre-load model into VRAM
+# Pre-load model into VRAM using API (more reliable than interactive mode)
 echo "Loading model into VRAM..."
-ollama run "$MODEL" "/bye" 2>/dev/null
+curl -s http://localhost:11434/api/generate -d "{
+  \"model\": \"$MODEL\",
+  \"prompt\": \"hi\",
+  \"stream\": false,
+  \"options\": {\"num_predict\": 1}
+}" >/dev/null 2>&1
+echo "Model loaded."
 echo ""
 
 SESSION=0
@@ -67,9 +95,18 @@ while true; do
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
 
-    # Don't pre-load source files - let aider discover via repo map
-    # This saves context and prevents OOM
-    aider \
+    # CHECK BUILD STATUS BEFORE RUNNING AIDER
+    # If build is already broken, skip aider and go straight to Claude
+    echo "Checking build status..."
+    BUILD_PRE_CHECK=$($TEST_CMD 2>&1)
+    if echo "$BUILD_PRE_CHECK" | grep -qi "error\|failed"; then
+        echo "⚠ Build is broken - skipping aider, escalating to Claude..."
+        STUCK_COUNT=2  # Force immediate Claude escalation
+        EXIT_CODE=0
+    else
+        echo "✓ Build OK, running aider..."
+        # Don't pre-load source files - let aider discover via repo map
+        aider \
         "$INSTRUCTIONS_FILE" \
         --message "
 Read $INSTRUCTIONS_FILE. Work through unchecked [ ] items.
@@ -99,8 +136,20 @@ Use WHOLE edit format - output complete file contents.
     if [ $EXIT_CODE -ne 0 ]; then
         echo ""
         echo "Aider exited with error ($EXIT_CODE). Restarting ollama..."
-        pkill -9 -f "ollama"
-        sleep 5
+        pkill -9 -f "ollama" 2>/dev/null
+        wait 2>/dev/null
+        sleep 1
+
+        # Wait for live processes to die (max 10 seconds)
+        for i in {1..10}; do
+            LIVE_OLLAMA=$(pgrep -f "ollama" | xargs -r ps -o pid=,state= -p 2>/dev/null | grep -v " Z" | wc -l)
+            [ "$LIVE_OLLAMA" -eq 0 ] && break
+            echo "Waiting for $LIVE_OLLAMA ollama process(es)..."
+            pkill -9 -f "ollama" 2>/dev/null
+            sleep 1
+        done
+
+        # Start fresh instance
         ollama serve &>/dev/null &
         sleep 3
 
@@ -108,16 +157,23 @@ Use WHOLE edit format - output complete file contents.
         echo "Waiting for ollama..."
         for i in {1..30}; do
             if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+                echo "Ollama is ready."
                 break
             fi
             sleep 1
         done
 
-        # Warm up model
+        # Load the model using API
         echo "Loading model into VRAM..."
-        ollama run "$MODEL" "/bye" 2>/dev/null
-        sleep 2
+        curl -s http://localhost:11434/api/generate -d "{
+          \"model\": \"$MODEL\",
+          \"prompt\": \"hi\",
+          \"stream\": false,
+          \"options\": {\"num_predict\": 1}
+        }" >/dev/null 2>&1
+        echo "Model loaded."
     fi
+    fi  # End of else block (aider ran)
 
     COMMITS_AFTER=$(git rev-list --count HEAD 2>/dev/null || echo "0")
     NEW_COMMITS=$((COMMITS_AFTER - COMMITS))
