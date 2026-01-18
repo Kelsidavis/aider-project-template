@@ -1,9 +1,8 @@
 #!/bin/bash
 # Continuous development script
-# Edit GPU_UUID, FILE_PATTERN, and TEST_CMD for your project
+# Edit GPU_UUID and TEST_CMD for your project
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-FILE_PATTERN="*.py"  # Change to *.rs, *.ts, *.go, etc.
 TEST_CMD="echo 'TODO: set your test command'"  # e.g., "RUSTFLAGS='-D warnings' cargo build --release"
 MODEL="qwen3-30b-aider:latest"  # Your ollama model name
 INSTRUCTIONS_FILE="INSTRUCTIONS.md"  # Your roadmap/instructions file
@@ -43,10 +42,9 @@ while true; do
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
 
-    # Find source files (edit pattern as needed)
-    SRC_FILES=$(find . -name "$FILE_PATTERN" -not -path "./.git/*" 2>/dev/null | tr '\n' ' ')
-
-    aider $SRC_FILES \
+    # Don't pre-load source files - let aider discover via repo map
+    # This saves context and prevents OOM
+    aider \
         "$INSTRUCTIONS_FILE" \
         --message "
 Read $INSTRUCTIONS_FILE. Work through unchecked [ ] items.
@@ -144,9 +142,9 @@ Use WHOLE edit format - output complete file contents.
 
             BUILD_OUTPUT=$($TEST_CMD 2>&1 | tail -50)
 
-            # Snapshot file state before Claude runs (for hallucination detection)
-            FILES_BEFORE=$(find . -name "$FILE_PATTERN" -not -path "./.git/*" -exec md5sum {} \; 2>/dev/null | sort)
-            INSTRUCTIONS_BEFORE=$(md5sum "$INSTRUCTIONS_FILE" 2>/dev/null)
+            # Snapshot git state before Claude runs (for hallucination detection)
+            COMMIT_BEFORE=$(git rev-parse HEAD 2>/dev/null)
+            DIRTY_BEFORE=$(git status --porcelain 2>/dev/null | md5sum)
 
             # Run Claude non-interactively with --print and skip permissions
             # --dangerously-skip-permissions allows file edits and bash without prompts
@@ -172,12 +170,10 @@ Work autonomously until the task is complete.
             CLAUDE_EXIT=$?
 
             # Verify Claude actually made changes (anti-hallucination check)
-            FILES_AFTER=$(find . -name "$FILE_PATTERN" -not -path "./.git/*" -exec md5sum {} \; 2>/dev/null | sort)
-            INSTRUCTIONS_AFTER=$(md5sum "$INSTRUCTIONS_FILE" 2>/dev/null)
-            DIRTY_AFTER=$(git status --porcelain 2>/dev/null | wc -l)
-            COMMITS_AFTER_CLAUDE=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+            COMMIT_AFTER=$(git rev-parse HEAD 2>/dev/null)
+            DIRTY_AFTER=$(git status --porcelain 2>/dev/null | md5sum)
 
-            if [ "$FILES_BEFORE" = "$FILES_AFTER" ] && [ "$INSTRUCTIONS_BEFORE" = "$INSTRUCTIONS_AFTER" ] && [ "$DIRTY_AFTER" -eq 0 ] && [ "$COMMITS_AFTER_CLAUDE" -eq "$COMMITS_AFTER" ]; then
+            if [ "$COMMIT_BEFORE" = "$COMMIT_AFTER" ] && [ "$DIRTY_BEFORE" = "$DIRTY_AFTER" ]; then
                 echo ""
                 echo "⚠ Claude claimed to work but made NO actual changes!"
                 echo "  Files unchanged, no commits, no dirty files."
@@ -187,7 +183,8 @@ Work autonomously until the task is complete.
                 echo ""
                 echo "✓ Claude made actual changes."
                 # Check if changes compile
-                if [ "$DIRTY_AFTER" -gt 0 ]; then
+                DIRTY_COUNT=$(git status --porcelain 2>/dev/null | wc -l)
+                if [ "$DIRTY_COUNT" -gt 0 ]; then
                     echo "Testing uncommitted changes..."
                     if $TEST_CMD 2>&1; then
                         echo "✓ Build passes! Auto-committing Claude's work..."
