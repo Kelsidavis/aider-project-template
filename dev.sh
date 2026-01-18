@@ -24,6 +24,31 @@ echo "Starting continuous development..."
 echo "Press Ctrl+C to stop"
 echo ""
 
+# Kill any zombie ollama processes before starting
+echo "Cleaning up any existing ollama processes..."
+pkill -9 -f "ollama" 2>/dev/null
+sleep 2
+
+# Start fresh ollama instance
+echo "Starting ollama..."
+ollama serve &>/dev/null &
+sleep 3
+
+# Wait for ollama to be ready
+echo "Waiting for ollama to be ready..."
+for i in {1..30}; do
+    if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+        echo "Ollama is ready."
+        break
+    fi
+    sleep 1
+done
+
+# Pre-load model into VRAM
+echo "Loading model into VRAM..."
+ollama run "$MODEL" "/bye" 2>/dev/null
+echo ""
+
 SESSION=0
 STUCK_COUNT=0
 
