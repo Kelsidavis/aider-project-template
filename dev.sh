@@ -32,6 +32,8 @@ STAT_AIDER_CRASHES=0
 STAT_HEALTH_CHECK_FAILURES=0
 STAT_BUILD_FAILURES=0
 STAT_HALLUCINATIONS=0
+STAT_MISSING_FILES=0
+STAT_MISPLACED_FILES=0
 STAT_STUCK_EVENTS=0
 STAT_CLAUDE_CALLS=0
 STAT_CLAUDE_HALLUCINATIONS=0
@@ -74,6 +76,8 @@ print_stats() {
     echo "  Aider crashes:          $STAT_AIDER_CRASHES"
     echo "  Build failures:         $STAT_BUILD_FAILURES"
     echo "  Hallucinations:         $STAT_HALLUCINATIONS"
+    echo "  Missing file claims:    $STAT_MISSING_FILES"
+    echo "  Misplaced files fixed:  $STAT_MISPLACED_FILES"
     echo "  Code reverts:           $STAT_REVERTS"
     echo "  Stuck events:           $STAT_STUCK_EVENTS"
     echo ""
@@ -311,11 +315,19 @@ CRITICAL RULES:
 4. If creating a new module, BOTH create the file AND add it to the main file
 
 WORKFLOW:
-1. Create/edit files with COMPLETE code (not snippets)
-2. RUN THE BUILD/TEST - do not skip this
-3. Fix ALL errors and warnings
-4. Only mark [x] when tests pass
-5. Commit your changes
+1. If creating a new module, create the .rs file FIRST using edit blocks
+2. THEN add the mod statement to lib.rs
+3. RUN THE BUILD/TEST - do not skip this
+4. Fix ALL errors and warnings
+5. Only mark [x] when tests pass
+6. Commit your changes
+
+CRITICAL: Do NOT add 'mod foo;' to lib.rs without FIRST creating src/foo.rs!
+You MUST use edit blocks to create files - describing what you would write is NOT enough.
+
+FILE LOCATION: All .rs module files MUST be in the src/ directory, not in the project root!
+  CORRECT: src/mymodule.rs
+  WRONG: mymodule.rs (in root)
 
 Use WHOLE edit format - output complete file contents.
 "
@@ -374,7 +386,38 @@ Use WHOLE edit format - output complete file contents.
     if [ $DIRTY_FILES -gt 0 ]; then
         echo "Found uncommitted changes, testing build..."
         log "INFO" "Testing $DIRTY_FILES uncommitted files"
-        if $TEST_CMD 2>&1; then
+
+        # AUTO-FIX: Move misplaced .rs files from root to src/ (common aider mistake)
+        if [ -f src/lib.rs ]; then
+            for mod_name in $(grep -oP '(?<=^mod )\w+(?=;)' src/lib.rs 2>/dev/null); do
+                if [ -f "${mod_name}.rs" ] && [ ! -f "src/${mod_name}.rs" ]; then
+                    echo "⚠ Auto-fixing: Moving ${mod_name}.rs to src/${mod_name}.rs"
+                    log "WARN" "Auto-fixing misplaced file: ${mod_name}.rs -> src/${mod_name}.rs"
+                    mv "${mod_name}.rs" "src/${mod_name}.rs"
+                    STAT_MISPLACED_FILES=$((STAT_MISPLACED_FILES + 1))
+                fi
+            done
+        fi
+
+        # PRE-BUILD CHECK: Detect missing module files (common hallucination)
+        MISSING_MODS=""
+        if [ -f src/lib.rs ]; then
+            for mod_name in $(grep -oP '(?<=^mod )\w+(?=;)' src/lib.rs 2>/dev/null); do
+                if [ ! -f "src/${mod_name}.rs" ] && [ ! -d "src/${mod_name}" ]; then
+                    MISSING_MODS="$MISSING_MODS $mod_name"
+                fi
+            done
+        fi
+
+        if [ -n "$MISSING_MODS" ]; then
+            echo "✗ HALLUCINATION DETECTED: mod statement(s) without files:$MISSING_MODS"
+            log "WARN" "Missing module files:$MISSING_MODS (aider claimed to create but didn't)"
+            STAT_MISSING_FILES=$((STAT_MISSING_FILES + 1))
+            STAT_HALLUCINATIONS=$((STAT_HALLUCINATIONS + 1))
+            STAT_REVERTS=$((STAT_REVERTS + 1))
+            git checkout -- .
+            git clean -fd
+        elif $TEST_CMD 2>&1; then
             echo "Build passes! Committing aider's uncommitted work..."
             log "INFO" "Uncommitted changes compile, auto-committing"
             git add -A
