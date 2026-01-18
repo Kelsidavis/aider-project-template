@@ -1,0 +1,10 @@
+model: ollama/qwen3-30b-aider:latest
+edit-format: whole
+yes-always: true
+auto-commits: true
+auto-test: true
+test-cmd: echo "TODO: Add your build/test command here"
+suggest-shell-commands: true
+map-tokens: 2048
+attribute-author: false
+attribute-committer: false

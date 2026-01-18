@@ -1,0 +1,27 @@
+# Aider
+.aider*
+!.aider.conf.yml
+
+# Build outputs (uncomment/edit as needed)
+# /target        # Rust
+# /node_modules  # Node
+# /__pycache__   # Python
+# /venv          # Python virtualenv
+# /dist          # Build output
+# /build         # Build output
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (never commit these)
+.env
+*.pem
+*.key
+credentials.json
