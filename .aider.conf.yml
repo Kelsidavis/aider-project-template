@@ -8,3 +8,4 @@ suggest-shell-commands: true
 map-tokens: 2048
 attribute-author: false
 attribute-committer: false
+dark-mode: true

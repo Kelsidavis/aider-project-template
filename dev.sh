@@ -67,6 +67,9 @@ Use WHOLE edit format - output complete file contents.
         echo ""
         echo "Recent commits:"
         git log --oneline -n $NEW_COMMITS
+        echo ""
+        echo "Pushing to origin..."
+        git push
     fi
 
     # Stop when all tasks complete
