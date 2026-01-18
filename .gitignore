@@ -1,6 +1,7 @@
 # Aider
 .aider*
 !.aider.conf.yml
+!.aider.model.metadata.json
 
 # Build outputs (uncomment/edit as needed)
 # /target        # Rust
