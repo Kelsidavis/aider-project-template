@@ -257,7 +257,8 @@ while true; do
     # CHECK BUILD STATUS - tell aider about errors if any
     echo "Checking build status..."
     BUILD_PRE_CHECK=$($TEST_CMD 2>&1)
-    BUILD_ERRORS=$(echo "$BUILD_PRE_CHECK" | tail -30)
+    # Keep error output small to avoid OOM (15 lines max)
+    BUILD_ERRORS=$(echo "$BUILD_PRE_CHECK" | grep -iE "error|failed|warning" | head -15)
 
     if echo "$BUILD_PRE_CHECK" | grep -qi "error\|failed"; then
         echo "⚠ Build has errors - telling aider to fix them first..."
@@ -438,10 +439,24 @@ Use WHOLE edit format - output complete file contents.
         echo ""
         echo "Recent commits:"
         git log --oneline -n $NEW_COMMITS
+
+        # CRITICAL: Verify committed code compiles before pushing
         echo ""
-        echo "Pushing to origin..."
-        git push
-        log "INFO" "Pushed $NEW_COMMITS commit(s)"
+        echo "Verifying committed code compiles before pushing..."
+        if ! $TEST_CMD 2>&1; then
+            echo "✗ Committed code FAILS to build - reverting commits!"
+            log "ERROR" "Committed code doesn't compile, reverting $NEW_COMMITS commit(s)"
+            STAT_BUILD_FAILURES=$((STAT_BUILD_FAILURES + 1))
+            STAT_REVERTS=$((STAT_REVERTS + 1))
+            git reset --hard HEAD~$NEW_COMMITS
+            echo "Reverted to pre-session state."
+        else
+            echo "✓ Build verified"
+            echo ""
+            echo "Pushing to origin..."
+            git push
+            log "INFO" "Pushed $NEW_COMMITS commit(s)"
+        fi
         STUCK_COUNT=0
     else
         STUCK_COUNT=$((STUCK_COUNT + 1))
@@ -458,7 +473,8 @@ Use WHOLE edit format - output complete file contents.
             log "INFO" "Escalating to Claude Code"
             STAT_CLAUDE_CALLS=$((STAT_CLAUDE_CALLS + 1))
 
-            BUILD_OUTPUT=$($TEST_CMD 2>&1 | tail -50)
+            # Keep output small to avoid context overflow
+            BUILD_OUTPUT=$($TEST_CMD 2>&1 | grep -iE "error|failed|warning" | head -20)
             COMMIT_BEFORE=$(git rev-parse HEAD 2>/dev/null)
             DIRTY_BEFORE=$(git status --porcelain 2>/dev/null | md5sum)
 
@@ -504,8 +520,16 @@ Work autonomously until the task is complete.
                         log "INFO" "Claude changes compile, auto-committing"
                         git add -A
                         git commit -m "Auto-commit: Claude Code changes that compile"
-                        git push
-                        STAT_COMMITS=$((STAT_COMMITS + 1))
+                        # Verify commit before pushing
+                        if $TEST_CMD 2>&1; then
+                            git push
+                            STAT_COMMITS=$((STAT_COMMITS + 1))
+                        else
+                            echo "✗ Committed code fails - reverting"
+                            log "ERROR" "Claude commit fails build, reverting"
+                            STAT_REVERTS=$((STAT_REVERTS + 1))
+                            git reset --hard HEAD~1
+                        fi
                     else
                         echo "✗ Build FAILS - reverting Claude's broken code..."
                         log "WARN" "Claude changes don't compile, reverting"
@@ -524,14 +548,15 @@ Work autonomously until the task is complete.
         echo ""
         echo "Running periodic sanity check (session $SESSION)..."
         log "INFO" "Periodic sanity check at session $SESSION"
-        BUILD_CHECK=$($TEST_CMD 2>&1)
-        if echo "$BUILD_CHECK" | grep -qi "error\|failed"; then
+        BUILD_CHECK_FULL=$($TEST_CMD 2>&1)
+        BUILD_CHECK=$(echo "$BUILD_CHECK_FULL" | grep -iE "error|failed|warning" | head -15)
+        if echo "$BUILD_CHECK_FULL" | grep -qi "error\|failed"; then
             echo "⚠ Sanity check found errors - calling Claude haiku to fix..."
             log "WARN" "Sanity check failed, calling haiku"
             STAT_CLAUDE_CALLS=$((STAT_CLAUDE_CALLS + 1))
 
             timeout 120 claude --print --dangerously-skip-permissions --model haiku "
-Quick sanity check. Build/test is failing:
+Quick sanity check. Build errors:
 
 $BUILD_CHECK
 
@@ -544,8 +569,16 @@ Please fix any issues and ensure build passes. Be brief.
                     log "INFO" "Haiku fixed the build"
                     git add -A
                     git commit -m "Auto-commit: Claude haiku build fix"
-                    git push
-                    STAT_COMMITS=$((STAT_COMMITS + 1))
+                    # Verify commit before pushing
+                    if $TEST_CMD 2>&1; then
+                        git push
+                        STAT_COMMITS=$((STAT_COMMITS + 1))
+                    else
+                        echo "✗ Committed code fails - reverting"
+                        log "ERROR" "Haiku commit fails build, reverting"
+                        STAT_REVERTS=$((STAT_REVERTS + 1))
+                        git reset --hard HEAD~1
+                    fi
                 else
                     echo "✗ Haiku's fix didn't work - reverting..."
                     log "WARN" "Haiku fix failed, reverting"
