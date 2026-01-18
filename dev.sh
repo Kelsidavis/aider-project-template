@@ -299,17 +299,38 @@ After fixing, run the build command to verify.
     fi
 
     # Run aider with 15-minute timeout
-    # NOTE: Context settings should come from .aider.conf.yml - keep prompt short to save tokens
     log "INFO" "Starting aider session"
     timeout 900 aider \
         "$INSTRUCTIONS_FILE" \
-        --no-stream \
-        --yes \
         --message "
 $BUILD_STATUS_MSG
-TASK: $NEXT_TASK_ONELINE
+Read $INSTRUCTIONS_FILE. Work through unchecked [ ] items.
 
-RULES: Create files in src/ FIRST, then add mod. Run build/test after changes. Zero errors before marking [x].
+NEXT TASKS:
+$NEXT_TASKS
+
+CRITICAL RULES:
+1. You MUST actually create files using the edit blocks - do not just describe what you would do
+2. After EVERY change, run the build/test command
+3. Code must pass ALL tests with ZERO warnings before marking [x]
+4. If creating a new module, BOTH create the file AND add it to the main file
+
+WORKFLOW:
+1. If creating a new module, create the .rs file FIRST using edit blocks
+2. THEN add the mod statement to lib.rs
+3. RUN THE BUILD/TEST - do not skip this
+4. Fix ALL errors and warnings
+5. Only mark [x] when tests pass
+6. Commit your changes
+
+CRITICAL: Do NOT add 'mod foo;' to lib.rs without FIRST creating src/foo.rs!
+You MUST use edit blocks to create files - describing what you would write is NOT enough.
+
+FILE LOCATION: All .rs module files MUST be in the src/ directory, not in the project root!
+  CORRECT: src/mymodule.rs
+  WRONG: mymodule.rs (in root)
+
+Use WHOLE edit format - output complete file contents.
 "
 
     EXIT_CODE=$?
