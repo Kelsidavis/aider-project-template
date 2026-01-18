@@ -1,9 +1,10 @@
 #!/bin/bash
 # Continuous development script
-# Edit PROJECT_DIR and FILE_PATTERN for your project
+# Edit PROJECT_DIR, FILE_PATTERN, and TEST_CMD for your project
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FILE_PATTERN="*.py"  # Change to *.rs, *.ts, *.go, etc.
+TEST_CMD="echo 'TODO: set your test command'"  # e.g., "cargo build --release"
 
 cd "$PROJECT_DIR"
 
@@ -12,6 +13,7 @@ echo "Press Ctrl+C to stop"
 echo ""
 
 SESSION=0
+STUCK_COUNT=0
 
 while true; do
     SESSION=$((SESSION + 1))
@@ -70,6 +72,33 @@ Use WHOLE edit format - output complete file contents.
         echo ""
         echo "Pushing to origin..."
         git push
+        STUCK_COUNT=0
+    else
+        STUCK_COUNT=$((STUCK_COUNT + 1))
+        echo "No progress made (stuck count: $STUCK_COUNT)"
+
+        # Call Claude Code for help after 2 failed attempts
+        if [ $STUCK_COUNT -ge 2 ]; then
+            echo ""
+            echo "Calling Claude Code for help..."
+            BUILD_OUTPUT=$($TEST_CMD 2>&1 | tail -30)
+            claude --print "
+The local AI is stuck on this project. Please help.
+
+Current task from INSTRUCTIONS.md:
+$NEXT_TASKS
+
+Last build output:
+$BUILD_OUTPUT
+
+Please:
+1. Read the relevant source files
+2. Fix any issues preventing progress
+3. Run the build to verify
+4. Update INSTRUCTIONS.md if task is complete
+"
+            STUCK_COUNT=0
+        fi
     fi
 
     # Stop when all tasks complete
