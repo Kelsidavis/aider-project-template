@@ -1,16 +1,112 @@
 #!/bin/bash
 # Continuous development script
-# Edit GPU_UUID and TEST_CMD for your project
+# Edit the CONFIGURATION section for your project
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# === CONFIGURATION ===
 TEST_CMD="echo 'TODO: set your test command'"  # e.g., "RUSTFLAGS='-D warnings' cargo build --release"
 MODEL="qwen3-30b-aider:latest"  # Your ollama model name
 INSTRUCTIONS_FILE="INSTRUCTIONS.md"  # Your roadmap/instructions file
+PROJECT_NAME="MyProject"  # Used in planning session prompts
 
 # GPU Configuration - use UUID for stability (find with: nvidia-smi -L)
 # Leave empty to use all GPUs, or set to specific UUID like: GPU-707f560b-e5d9-3fea-9af2-c6dd2b77abbe
 GPU_UUID=""
 
+# === DEBUG / LOGGING ===
+DEBUG=1
+LOG_FILE="dev.log"
+START_TIME=$(date +%s)
+
+# Configuration intervals
+PLANNING_INTERVAL=10  # Run planning session every N sessions
+SANITY_CHECK_INTERVAL=5  # Run sanity check every N sessions
+
+# Stats counters
+STAT_SESSIONS=0
+STAT_OLLAMA_RESTARTS=0
+STAT_MODEL_LOAD_FAILURES=0
+STAT_AIDER_TIMEOUTS=0
+STAT_AIDER_CRASHES=0
+STAT_HEALTH_CHECK_FAILURES=0
+STAT_BUILD_FAILURES=0
+STAT_HALLUCINATIONS=0
+STAT_STUCK_EVENTS=0
+STAT_CLAUDE_CALLS=0
+STAT_CLAUDE_HALLUCINATIONS=0
+STAT_PLANNING_SESSIONS=0
+STAT_REVERTS=0
+STAT_COMMITS=0
+
+# Log function - writes to file
+log() {
+    local level="$1"
+    shift
+    local msg="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local entry="[$timestamp] [$level] $msg"
+
+    if [ "$DEBUG" -eq 1 ]; then
+        echo "$entry" >> "$LOG_FILE"
+    fi
+}
+
+# Print summary stats
+print_stats() {
+    local end_time=$(date +%s)
+    local duration=$((end_time - START_TIME))
+    local hours=$((duration / 3600))
+    local minutes=$(((duration % 3600) / 60))
+
+    echo ""
+    echo "════════════════════════════════════════════════════════════"
+    echo "                    SESSION SUMMARY"
+    echo "════════════════════════════════════════════════════════════"
+    echo "Runtime: ${hours}h ${minutes}m"
+    echo "Sessions completed: $STAT_SESSIONS"
+    echo ""
+    echo "Issues encountered:"
+    echo "  Ollama restarts:        $STAT_OLLAMA_RESTARTS"
+    echo "  Model load failures:    $STAT_MODEL_LOAD_FAILURES"
+    echo "  Health check failures:  $STAT_HEALTH_CHECK_FAILURES"
+    echo "  Aider timeouts:         $STAT_AIDER_TIMEOUTS"
+    echo "  Aider crashes:          $STAT_AIDER_CRASHES"
+    echo "  Build failures:         $STAT_BUILD_FAILURES"
+    echo "  Hallucinations:         $STAT_HALLUCINATIONS"
+    echo "  Code reverts:           $STAT_REVERTS"
+    echo "  Stuck events:           $STAT_STUCK_EVENTS"
+    echo ""
+    echo "Claude usage:"
+    echo "  Claude calls:           $STAT_CLAUDE_CALLS"
+    echo "  Claude hallucinations:  $STAT_CLAUDE_HALLUCINATIONS"
+    echo "  Planning sessions:      $STAT_PLANNING_SESSIONS"
+    echo ""
+    echo "Progress:"
+    echo "  Commits made:           $STAT_COMMITS"
+    echo "════════════════════════════════════════════════════════════"
+
+    log "INFO" "=== SESSION SUMMARY ==="
+    log "INFO" "Runtime: ${hours}h ${minutes}m, Sessions: $STAT_SESSIONS"
+    log "INFO" "Ollama restarts: $STAT_OLLAMA_RESTARTS, Model failures: $STAT_MODEL_LOAD_FAILURES"
+    log "INFO" "Aider timeouts: $STAT_AIDER_TIMEOUTS, Aider crashes: $STAT_AIDER_CRASHES"
+    log "INFO" "Build failures: $STAT_BUILD_FAILURES, Reverts: $STAT_REVERTS"
+    log "INFO" "Stuck events: $STAT_STUCK_EVENTS, Claude calls: $STAT_CLAUDE_CALLS"
+    log "INFO" "Planning sessions: $STAT_PLANNING_SESSIONS, Commits: $STAT_COMMITS"
+}
+
+# Cleanup on exit
+cleanup() {
+    echo ""
+    echo "Shutting down..."
+    log "INFO" "Shutdown requested"
+    print_stats
+    pkill -9 -f "ollama" 2>/dev/null
+    exit 0
+}
+trap cleanup SIGINT SIGTERM
+
+# === GPU SETUP ===
 if [ -n "$GPU_UUID" ]; then
     export CUDA_VISIBLE_DEVICES="$GPU_UUID"
 fi
@@ -20,16 +116,21 @@ export OLLAMA_NUM_CTX=12288
 
 cd "$PROJECT_DIR"
 
-echo "Starting continuous development..."
+# Initialize log file
+echo "" >> "$LOG_FILE"
+log "INFO" "========================================"
+log "INFO" "dev.sh started for $PROJECT_NAME"
+log "INFO" "========================================"
+
+echo "Starting continuous development for $PROJECT_NAME..."
 echo "Press Ctrl+C to stop"
+echo "Log file: $LOG_FILE"
 echo ""
 
 # Kill any existing ollama/aider processes and reap zombies
 echo "Cleaning up any existing processes..."
 pkill -9 -f "ollama" 2>/dev/null
 pkill -9 -f "aider" 2>/dev/null
-
-# Reap any zombie children from this shell
 wait 2>/dev/null
 
 # Wait for live (non-zombie) processes to die
@@ -43,7 +144,7 @@ for i in {1..10}; do
     sleep 1
 done
 
-# Orphan any remaining zombies by killing their parent shells (stopped dev.sh instances)
+# Kill stopped dev.sh instances holding zombies
 ZOMBIE_COUNT=$(ps aux | grep -E 'ollama|aider' | grep ' Z ' | wc -l)
 if [ "$ZOMBIE_COUNT" -gt 0 ]; then
     echo "Cleaning up $ZOMBIE_COUNT zombie process(es)..."
@@ -73,8 +174,8 @@ load_model() {
 
     for attempt in $(seq 1 $max_attempts); do
         echo "Loading model into VRAM (attempt $attempt/$max_attempts)..."
+        log "INFO" "Model load attempt $attempt/$max_attempts"
 
-        # Use timeout on curl to prevent hanging
         if timeout $timeout_secs curl -s http://localhost:11434/api/generate -d "{
           \"model\": \"$MODEL\",
           \"prompt\": \"hi\",
@@ -82,17 +183,21 @@ load_model() {
           \"options\": {\"num_predict\": 1}
         }" >/dev/null 2>&1; then
             echo "Model loaded successfully."
+            log "INFO" "Model loaded successfully"
             return 0
         else
             echo "Model load failed or timed out."
+            log "WARN" "Model load failed/timed out (attempt $attempt)"
+            STAT_MODEL_LOAD_FAILURES=$((STAT_MODEL_LOAD_FAILURES + 1))
             if [ $attempt -lt $max_attempts ]; then
                 echo "Restarting ollama and retrying..."
+                log "INFO" "Restarting ollama for model load retry"
+                STAT_OLLAMA_RESTARTS=$((STAT_OLLAMA_RESTARTS + 1))
                 pkill -9 -f "ollama" 2>/dev/null
                 wait 2>/dev/null
                 sleep 2
                 ollama serve &>/dev/null &
                 sleep 3
-                # Wait for ollama API
                 for i in {1..30}; do
                     if curl -s --max-time 5 http://localhost:11434/api/tags >/dev/null 2>&1; then
                         break
@@ -104,6 +209,7 @@ load_model() {
     done
 
     echo "ERROR: Failed to load model after $max_attempts attempts"
+    log "ERROR" "Failed to load model after $max_attempts attempts"
     return 1
 }
 
@@ -115,6 +221,7 @@ check_ollama_health() {
 # Load the model
 if ! load_model; then
     echo "Could not load model. Exiting."
+    log "ERROR" "Initial model load failed, exiting"
     exit 1
 fi
 echo ""
@@ -124,12 +231,18 @@ STUCK_COUNT=0
 
 while true; do
     SESSION=$((SESSION + 1))
+    STAT_SESSIONS=$((STAT_SESSIONS + 1))
     COMMITS=$(git rev-list --count HEAD 2>/dev/null || echo "0")
     DONE=$(grep -c "\[x\]" "$INSTRUCTIONS_FILE" 2>/dev/null || echo "0")
     TODO=$(grep -c "\[ \]" "$INSTRUCTIONS_FILE" 2>/dev/null || echo "0")
 
     # Get next 3 unchecked items
     NEXT_TASKS=$(grep -m3 "\[ \]" "$INSTRUCTIONS_FILE" | sed 's/- \[ \] /  - /')
+    NEXT_TASK_ONELINE=$(echo "$NEXT_TASKS" | head -1 | sed 's/^[[:space:]]*//')
+
+    log "INFO" "--- Session $SESSION started ---"
+    log "INFO" "Task: $NEXT_TASK_ONELINE"
+    log "INFO" "Progress: Done=$DONE, Todo=$TODO"
 
     echo "╔════════════════════════════════════════════════════════════╗"
     echo "║ Session: $SESSION | $(date '+%Y-%m-%d %H:%M:%S')"
@@ -144,6 +257,8 @@ while true; do
 
     if echo "$BUILD_PRE_CHECK" | grep -qi "error\|failed"; then
         echo "⚠ Build has errors - telling aider to fix them first..."
+        log "WARN" "Build broken at session start"
+        STAT_BUILD_FAILURES=$((STAT_BUILD_FAILURES + 1))
         BUILD_STATUS_MSG="
 URGENT: The build is currently BROKEN. Fix these errors FIRST before doing anything else:
 
@@ -155,12 +270,16 @@ After fixing, run the build command to verify.
 "
     else
         echo "✓ Build OK"
+        log "INFO" "Build OK at session start"
         BUILD_STATUS_MSG=""
     fi
 
     # Pre-flight check: ensure ollama is healthy before starting aider
     if ! check_ollama_health; then
         echo "⚠ Ollama not responding, restarting..."
+        log "WARN" "Health check failed, restarting ollama"
+        STAT_HEALTH_CHECK_FAILURES=$((STAT_HEALTH_CHECK_FAILURES + 1))
+        STAT_OLLAMA_RESTARTS=$((STAT_OLLAMA_RESTARTS + 1))
         pkill -9 -f "ollama" 2>/dev/null
         wait 2>/dev/null
         sleep 2
@@ -168,13 +287,14 @@ After fixing, run the build command to verify.
         sleep 3
         if ! load_model; then
             echo "Failed to restart ollama, skipping this session..."
+            log "ERROR" "Failed to restart ollama, skipping session"
             sleep 5
             continue
         fi
     fi
 
-    # Don't pre-load source files - let aider discover via repo map
-    # Use timeout to prevent indefinite hangs (15 minutes max per session)
+    # Run aider with 15-minute timeout
+    log "INFO" "Starting aider session"
     timeout 900 aider \
         "$INSTRUCTIONS_FILE" \
         --message "
@@ -201,12 +321,15 @@ Use WHOLE edit format - output complete file contents.
 "
 
     EXIT_CODE=$?
+    log "INFO" "Aider exited with code $EXIT_CODE"
 
-    # If aider timed out (exit 124) or crashed, restart ollama to clear VRAM
+    # If aider timed out (exit 124) or crashed, restart ollama
     if [ $EXIT_CODE -eq 124 ]; then
         echo ""
         echo "⚠ Aider session timed out (15 min limit). Likely ollama hung."
         echo "Killing aider and restarting ollama..."
+        log "WARN" "Aider timed out (15 min limit)"
+        STAT_AIDER_TIMEOUTS=$((STAT_AIDER_TIMEOUTS + 1))
         pkill -9 -f "aider" 2>/dev/null
     fi
 
@@ -214,12 +337,16 @@ Use WHOLE edit format - output complete file contents.
         echo ""
         echo "Aider exited with code $EXIT_CODE. Restarting ollama..."
 
-        # Kill all ollama processes and reap zombies
+        if [ $EXIT_CODE -ne 124 ]; then
+            log "WARN" "Aider crashed with exit code $EXIT_CODE"
+            STAT_AIDER_CRASHES=$((STAT_AIDER_CRASHES + 1))
+        fi
+
+        STAT_OLLAMA_RESTARTS=$((STAT_OLLAMA_RESTARTS + 1))
         pkill -9 -f "ollama" 2>/dev/null
         wait 2>/dev/null
         sleep 2
 
-        # Wait for live processes to die (max 10 seconds)
         for i in {1..10}; do
             LIVE_OLLAMA=$(pgrep -f "ollama" | xargs -r ps -o pid=,state= -p 2>/dev/null | grep -v " Z" | wc -l)
             [ "$LIVE_OLLAMA" -eq 0 ] && break
@@ -228,7 +355,6 @@ Use WHOLE edit format - output complete file contents.
             sleep 1
         done
 
-        # Start fresh instance and load model using the robust function
         ollama serve &>/dev/null &
         sleep 3
         load_model
@@ -236,8 +362,6 @@ Use WHOLE edit format - output complete file contents.
 
     COMMITS_AFTER=$(git rev-list --count HEAD 2>/dev/null || echo "0")
     NEW_COMMITS=$((COMMITS_AFTER - COMMITS))
-
-    # Check for uncommitted changes (sign of hallucination - aider made partial changes)
     DIRTY_FILES=$(git status --porcelain 2>/dev/null | wc -l)
 
     echo ""
@@ -249,13 +373,19 @@ Use WHOLE edit format - output complete file contents.
     # If there are dirty files, check if they compile
     if [ $DIRTY_FILES -gt 0 ]; then
         echo "Found uncommitted changes, testing build..."
+        log "INFO" "Testing $DIRTY_FILES uncommitted files"
         if $TEST_CMD 2>&1; then
             echo "Build passes! Committing aider's uncommitted work..."
+            log "INFO" "Uncommitted changes compile, auto-committing"
             git add -A
             git commit -m "Auto-commit: aider changes that compile"
             NEW_COMMITS=1
+            STAT_COMMITS=$((STAT_COMMITS + 1))
         else
             echo "Build fails with uncommitted changes - reverting hallucinated code..."
+            log "WARN" "Uncommitted changes don't compile, reverting (hallucination)"
+            STAT_HALLUCINATIONS=$((STAT_HALLUCINATIONS + 1))
+            STAT_REVERTS=$((STAT_REVERTS + 1))
             git checkout -- .
             git clean -fd
         fi
@@ -268,10 +398,13 @@ Use WHOLE edit format - output complete file contents.
         echo ""
         echo "Pushing to origin..."
         git push
+        log "INFO" "Pushed $NEW_COMMITS commit(s)"
         STUCK_COUNT=0
     else
         STUCK_COUNT=$((STUCK_COUNT + 1))
+        STAT_STUCK_EVENTS=$((STAT_STUCK_EVENTS + 1))
         echo "No progress made (stuck count: $STUCK_COUNT)"
+        log "WARN" "No progress, stuck count: $STUCK_COUNT"
 
         # Call Claude Code for help after 2 failed attempts
         if [ $STUCK_COUNT -ge 2 ]; then
@@ -279,15 +412,13 @@ Use WHOLE edit format - output complete file contents.
             echo "════════════════════════════════════════════════════════════"
             echo "Calling Claude Code to fix the issue..."
             echo "════════════════════════════════════════════════════════════"
+            log "INFO" "Escalating to Claude Code"
+            STAT_CLAUDE_CALLS=$((STAT_CLAUDE_CALLS + 1))
 
             BUILD_OUTPUT=$($TEST_CMD 2>&1 | tail -50)
-
-            # Snapshot git state before Claude runs (for hallucination detection)
             COMMIT_BEFORE=$(git rev-parse HEAD 2>/dev/null)
             DIRTY_BEFORE=$(git status --porcelain 2>/dev/null | md5sum)
 
-            # Run Claude non-interactively with --print and skip permissions
-            # --dangerously-skip-permissions allows file edits and bash without prompts
             timeout 300 claude --print --dangerously-skip-permissions "
 The local AI is stuck on this project. Please help.
 
@@ -308,31 +439,34 @@ Please:
 Work autonomously until the task is complete.
 "
             CLAUDE_EXIT=$?
+            log "INFO" "Claude exited with code $CLAUDE_EXIT"
 
-            # Verify Claude actually made changes (anti-hallucination check)
             COMMIT_AFTER=$(git rev-parse HEAD 2>/dev/null)
             DIRTY_AFTER=$(git status --porcelain 2>/dev/null | md5sum)
 
             if [ "$COMMIT_BEFORE" = "$COMMIT_AFTER" ] && [ "$DIRTY_BEFORE" = "$DIRTY_AFTER" ]; then
                 echo ""
                 echo "⚠ Claude claimed to work but made NO actual changes!"
-                echo "  Files unchanged, no commits, no dirty files."
-                echo "  This was likely a hallucination. Continuing..."
-                # Don't reset stuck count - let it try again or escalate
+                log "WARN" "Claude hallucination - no actual changes made"
+                STAT_CLAUDE_HALLUCINATIONS=$((STAT_CLAUDE_HALLUCINATIONS + 1))
             else
                 echo ""
                 echo "✓ Claude made actual changes."
-                # Check if changes compile
+                log "INFO" "Claude made actual changes"
                 DIRTY_COUNT=$(git status --porcelain 2>/dev/null | wc -l)
                 if [ "$DIRTY_COUNT" -gt 0 ]; then
                     echo "Testing uncommitted changes..."
                     if $TEST_CMD 2>&1; then
                         echo "✓ Build passes! Auto-committing Claude's work..."
+                        log "INFO" "Claude changes compile, auto-committing"
                         git add -A
                         git commit -m "Auto-commit: Claude Code changes that compile"
                         git push
+                        STAT_COMMITS=$((STAT_COMMITS + 1))
                     else
                         echo "✗ Build FAILS - reverting Claude's broken code..."
+                        log "WARN" "Claude changes don't compile, reverting"
+                        STAT_REVERTS=$((STAT_REVERTS + 1))
                         git checkout -- .
                         git clean -fd 2>/dev/null
                     fi
@@ -342,15 +476,17 @@ Work autonomously until the task is complete.
         fi
     fi
 
-    # Periodic sanity check every 5 sessions (uses haiku to keep costs low)
-    if [ $((SESSION % 5)) -eq 0 ] && [ $SESSION -gt 0 ]; then
+    # Periodic sanity check (uses haiku to keep costs low)
+    if [ $((SESSION % SANITY_CHECK_INTERVAL)) -eq 0 ] && [ $SESSION -gt 0 ]; then
         echo ""
         echo "Running periodic sanity check (session $SESSION)..."
+        log "INFO" "Periodic sanity check at session $SESSION"
         BUILD_CHECK=$($TEST_CMD 2>&1)
         if echo "$BUILD_CHECK" | grep -qi "error\|failed"; then
             echo "⚠ Sanity check found errors - calling Claude haiku to fix..."
+            log "WARN" "Sanity check failed, calling haiku"
+            STAT_CLAUDE_CALLS=$((STAT_CLAUDE_CALLS + 1))
 
-            # Run haiku non-interactively
             timeout 120 claude --print --dangerously-skip-permissions --model haiku "
 Quick sanity check. Build/test is failing:
 
@@ -358,31 +494,127 @@ $BUILD_CHECK
 
 Please fix any issues and ensure build passes. Be brief.
 "
-            # Verify and commit haiku's changes
             DIRTY_HAIKU=$(git status --porcelain 2>/dev/null | wc -l)
             if [ "$DIRTY_HAIKU" -gt 0 ]; then
                 if $TEST_CMD 2>&1; then
                     echo "✓ Haiku fixed the build!"
+                    log "INFO" "Haiku fixed the build"
                     git add -A
                     git commit -m "Auto-commit: Claude haiku build fix"
                     git push
+                    STAT_COMMITS=$((STAT_COMMITS + 1))
                 else
                     echo "✗ Haiku's fix didn't work - reverting..."
+                    log "WARN" "Haiku fix failed, reverting"
+                    STAT_REVERTS=$((STAT_REVERTS + 1))
                     git checkout -- .
                     git clean -fd 2>/dev/null
                 fi
             fi
         else
             echo "✓ Sanity check passed"
+            log "INFO" "Sanity check passed"
+        fi
+    fi
+
+    # Strategic planning session (uses Opus for high-level thinking)
+    if [ $((SESSION % PLANNING_INTERVAL)) -eq 0 ] && [ $SESSION -gt 0 ]; then
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════╗"
+        echo "║           STRATEGIC PLANNING SESSION                       ║"
+        echo "╚════════════════════════════════════════════════════════════╝"
+        log "INFO" "Starting planning session at session $SESSION"
+        STAT_PLANNING_SESSIONS=$((STAT_PLANNING_SESSIONS + 1))
+        STAT_CLAUDE_CALLS=$((STAT_CLAUDE_CALLS + 1))
+
+        COMPLETED_TASKS=$(grep "\[x\]" "$INSTRUCTIONS_FILE" | tail -10)
+        REMAINING_TASKS=$(grep "\[ \]" "$INSTRUCTIONS_FILE")
+        RECENT_COMMITS=$(git log --oneline -10 2>/dev/null)
+        CODE_STRUCTURE=$(find . -name "*.rs" -o -name "*.py" -o -name "*.ts" -o -name "*.go" 2>/dev/null | grep -v node_modules | grep -v target | head -30)
+
+        INSTRUCTIONS_BEFORE=$(md5sum "$INSTRUCTIONS_FILE" 2>/dev/null)
+
+        timeout 600 claude --print --dangerously-skip-permissions "
+You are the visionary architect and strategic planner for $PROJECT_NAME.
+
+SESSION STATS:
+- Sessions completed: $SESSION
+- Tasks done: $DONE
+- Tasks remaining: $TODO
+
+RECENT PROGRESS (last 10 commits):
+$RECENT_COMMITS
+
+RECENTLY COMPLETED TASKS:
+$COMPLETED_TASKS
+
+CURRENT REMAINING TASKS:
+$REMAINING_TASKS
+
+CURRENT CODE STRUCTURE:
+$CODE_STRUCTURE
+
+YOUR MISSION - EVOLVE THE VISION:
+
+1. CELEBRATE PROGRESS: Review what's been accomplished and how the project is taking shape
+
+2. EXPAND THE ROADMAP: The roadmap should always be growing. Add new features that would make this a more capable, interesting project:
+   - What's the next logical capability after current tasks?
+   - What would make this project unique or impressive?
+   - Think about what features would be fun to implement and demo
+
+3. REFINE PRIORITIES: Reorder tasks so the most impactful/unblocking work comes first
+
+4. ADD DETAIL: For complex upcoming tasks, add implementation hints or break them into subtasks
+
+5. MAINTAIN VISION: Keep a 'Vision' or 'Goals' section at the top describing what this project is becoming
+
+UPDATE $INSTRUCTIONS_FILE:
+- Add 3-5 NEW tasks beyond what's currently listed (always be expanding)
+- Reorder if needed (dependencies first, then high-impact features)
+- Add brief implementation hints for tricky tasks
+- Keep checkbox format: - [ ] todo, - [x] done
+- Group related tasks under phase headings
+
+PHILOSOPHY:
+- This project should keep getting more capable and interesting
+- Each planning session should leave the roadmap MORE ambitious, not less
+- Balance achievable near-term tasks with exciting longer-term goals
+- The local AI (aider) works best with clear, specific tasks
+
+After updating, commit with message: 'docs: planning session - expand roadmap'
+"
+        PLANNING_EXIT=$?
+        log "INFO" "Planning session exited with code $PLANNING_EXIT"
+
+        INSTRUCTIONS_AFTER=$(md5sum "$INSTRUCTIONS_FILE" 2>/dev/null)
+        if [ "$INSTRUCTIONS_BEFORE" != "$INSTRUCTIONS_AFTER" ]; then
+            echo "✓ Roadmap updated by planning session"
+            log "INFO" "Roadmap was updated by planning session"
+
+            DIRTY_PLAN=$(git status --porcelain "$INSTRUCTIONS_FILE" 2>/dev/null | wc -l)
+            if [ "$DIRTY_PLAN" -gt 0 ]; then
+                git add "$INSTRUCTIONS_FILE"
+                git commit -m "docs: planning session - expand roadmap (session $SESSION)"
+                git push
+                STAT_COMMITS=$((STAT_COMMITS + 1))
+                log "INFO" "Committed roadmap expansion"
+            fi
+        else
+            echo "Roadmap unchanged (planning found no updates needed)"
+            log "INFO" "Planning session made no roadmap changes"
         fi
     fi
 
     # Stop when all tasks complete
     if [ "$TODO" -eq 0 ]; then
         echo "All tasks complete!"
+        log "INFO" "All tasks complete!"
         break
     fi
 
     echo ""
     sleep 1
 done
+
+print_stats
