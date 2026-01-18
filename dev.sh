@@ -1,10 +1,23 @@
 #!/bin/bash
 # Continuous development script
-# Edit PROJECT_DIR, FILE_PATTERN, and TEST_CMD for your project
+# Edit GPU_UUID, FILE_PATTERN, and TEST_CMD for your project
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FILE_PATTERN="*.py"  # Change to *.rs, *.ts, *.go, etc.
-TEST_CMD="echo 'TODO: set your test command'"  # e.g., "cargo build --release"
+TEST_CMD="echo 'TODO: set your test command'"  # e.g., "RUSTFLAGS='-D warnings' cargo build --release"
+MODEL="qwen3-30b-aider:latest"  # Your ollama model name
+INSTRUCTIONS_FILE="INSTRUCTIONS.md"  # Your roadmap/instructions file
+
+# GPU Configuration - use UUID for stability (find with: nvidia-smi -L)
+# Leave empty to use all GPUs, or set to specific UUID like: GPU-707f560b-e5d9-3fea-9af2-c6dd2b77abbe
+GPU_UUID=""
+
+if [ -n "$GPU_UUID" ]; then
+    export CUDA_VISIBLE_DEVICES="$GPU_UUID"
+fi
+export OLLAMA_FLASH_ATTENTION=1
+export OLLAMA_KV_CACHE_TYPE=q8_0
+export OLLAMA_NUM_CTX=12288
 
 cd "$PROJECT_DIR"
 
@@ -18,11 +31,11 @@ STUCK_COUNT=0
 while true; do
     SESSION=$((SESSION + 1))
     COMMITS=$(git rev-list --count HEAD 2>/dev/null || echo "0")
-    DONE=$(grep -c "\[x\]" INSTRUCTIONS.md 2>/dev/null || echo "0")
-    TODO=$(grep -c "\[ \]" INSTRUCTIONS.md 2>/dev/null || echo "0")
+    DONE=$(grep -c "\[x\]" "$INSTRUCTIONS_FILE" 2>/dev/null || echo "0")
+    TODO=$(grep -c "\[ \]" "$INSTRUCTIONS_FILE" 2>/dev/null || echo "0")
 
     # Get next 3 unchecked items
-    NEXT_TASKS=$(grep -m3 "\[ \]" INSTRUCTIONS.md | sed 's/- \[ \] /  - /')
+    NEXT_TASKS=$(grep -m3 "\[ \]" "$INSTRUCTIONS_FILE" | sed 's/- \[ \] /  - /')
 
     echo "╔════════════════════════════════════════════════════════════╗"
     echo "║ Session: $SESSION | $(date '+%Y-%m-%d %H:%M:%S')"
@@ -34,36 +47,81 @@ while true; do
     SRC_FILES=$(find . -name "$FILE_PATTERN" -not -path "./.git/*" 2>/dev/null | tr '\n' ' ')
 
     aider $SRC_FILES \
-        INSTRUCTIONS.md \
+        "$INSTRUCTIONS_FILE" \
         --message "
-Read INSTRUCTIONS.md. Work through unchecked [ ] items.
+Read $INSTRUCTIONS_FILE. Work through unchecked [ ] items.
 
 NEXT TASKS:
 $NEXT_TASKS
 
-CRITICAL: After EVERY change, run the build/test command.
-Code must pass ALL tests with ZERO warnings before marking [x].
+CRITICAL RULES:
+1. You MUST actually create files using the edit blocks - do not just describe what you would do
+2. After EVERY change, run the build/test command
+3. Code must pass ALL tests with ZERO warnings before marking [x]
+4. If creating a new module, BOTH create the file AND add it to the main file
 
 WORKFLOW:
-1. Implement feature
-2. RUN THE BUILD/TEST - do not skip this step
+1. Create/edit files with COMPLETE code (not snippets)
+2. RUN THE BUILD/TEST - do not skip this
 3. Fix ALL errors and warnings
 4. Only mark [x] when tests pass
-5. Move to next task
+5. Commit your changes
 
 Use WHOLE edit format - output complete file contents.
 "
 
     EXIT_CODE=$?
 
+    # If aider crashed (OOM, etc), restart ollama to clear VRAM
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo ""
+        echo "Aider exited with error ($EXIT_CODE). Restarting ollama..."
+        pkill -9 -f "ollama"
+        sleep 5
+        ollama serve &>/dev/null &
+        sleep 3
+
+        # Wait for ollama to be ready
+        echo "Waiting for ollama..."
+        for i in {1..30}; do
+            if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+                break
+            fi
+            sleep 1
+        done
+
+        # Warm up model
+        echo "Loading model into VRAM..."
+        ollama run "$MODEL" "/bye" 2>/dev/null
+        sleep 2
+    fi
+
     COMMITS_AFTER=$(git rev-list --count HEAD 2>/dev/null || echo "0")
     NEW_COMMITS=$((COMMITS_AFTER - COMMITS))
+
+    # Check for uncommitted changes (sign of hallucination - aider made partial changes)
+    DIRTY_FILES=$(git status --porcelain 2>/dev/null | wc -l)
 
     echo ""
     echo "┌─────────────────────────────────────────────────────────────┐"
     echo "│ Session $SESSION complete (exit: $EXIT_CODE)"
-    echo "│ New commits: $NEW_COMMITS | Total: $COMMITS_AFTER"
+    echo "│ New commits: $NEW_COMMITS | Uncommitted files: $DIRTY_FILES"
     echo "└─────────────────────────────────────────────────────────────┘"
+
+    # If there are dirty files, check if they compile
+    if [ $DIRTY_FILES -gt 0 ]; then
+        echo "Found uncommitted changes, testing build..."
+        if $TEST_CMD 2>&1; then
+            echo "Build passes! Committing aider's uncommitted work..."
+            git add -A
+            git commit -m "Auto-commit: aider changes that compile"
+            NEW_COMMITS=1
+        else
+            echo "Build fails with uncommitted changes - reverting hallucinated code..."
+            git checkout -- .
+            git clean -fd
+        fi
+    fi
 
     if [ $NEW_COMMITS -gt 0 ]; then
         echo ""
@@ -80,12 +138,22 @@ Use WHOLE edit format - output complete file contents.
         # Call Claude Code for help after 2 failed attempts
         if [ $STUCK_COUNT -ge 2 ]; then
             echo ""
-            echo "Calling Claude Code for help..."
-            BUILD_OUTPUT=$($TEST_CMD 2>&1 | tail -30)
-            claude --print "
+            echo "════════════════════════════════════════════════════════════"
+            echo "Calling Claude Code to fix the issue..."
+            echo "════════════════════════════════════════════════════════════"
+
+            BUILD_OUTPUT=$($TEST_CMD 2>&1 | tail -50)
+
+            # Snapshot file state before Claude runs (for hallucination detection)
+            FILES_BEFORE=$(find . -name "$FILE_PATTERN" -not -path "./.git/*" -exec md5sum {} \; 2>/dev/null | sort)
+            INSTRUCTIONS_BEFORE=$(md5sum "$INSTRUCTIONS_FILE" 2>/dev/null)
+
+            # Run Claude non-interactively with --print and skip permissions
+            # --dangerously-skip-permissions allows file edits and bash without prompts
+            timeout 300 claude --print --dangerously-skip-permissions "
 The local AI is stuck on this project. Please help.
 
-Current task from INSTRUCTIONS.md:
+Current task from $INSTRUCTIONS_FILE:
 $NEXT_TASKS
 
 Last build output:
@@ -93,11 +161,82 @@ $BUILD_OUTPUT
 
 Please:
 1. Read the relevant source files
-2. Fix any issues preventing progress
-3. Run the build to verify
-4. Update INSTRUCTIONS.md if task is complete
+2. Create or fix the files needed for the current task
+3. Run the build/test command to verify
+4. Fix any errors until build passes
+5. Update $INSTRUCTIONS_FILE to mark [x] the completed task
+6. Commit and push the changes
+
+Work autonomously until the task is complete.
 "
-            STUCK_COUNT=0
+            CLAUDE_EXIT=$?
+
+            # Verify Claude actually made changes (anti-hallucination check)
+            FILES_AFTER=$(find . -name "$FILE_PATTERN" -not -path "./.git/*" -exec md5sum {} \; 2>/dev/null | sort)
+            INSTRUCTIONS_AFTER=$(md5sum "$INSTRUCTIONS_FILE" 2>/dev/null)
+            DIRTY_AFTER=$(git status --porcelain 2>/dev/null | wc -l)
+            COMMITS_AFTER_CLAUDE=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+
+            if [ "$FILES_BEFORE" = "$FILES_AFTER" ] && [ "$INSTRUCTIONS_BEFORE" = "$INSTRUCTIONS_AFTER" ] && [ "$DIRTY_AFTER" -eq 0 ] && [ "$COMMITS_AFTER_CLAUDE" -eq "$COMMITS_AFTER" ]; then
+                echo ""
+                echo "⚠ Claude claimed to work but made NO actual changes!"
+                echo "  Files unchanged, no commits, no dirty files."
+                echo "  This was likely a hallucination. Continuing..."
+                # Don't reset stuck count - let it try again or escalate
+            else
+                echo ""
+                echo "✓ Claude made actual changes."
+                # Check if changes compile
+                if [ "$DIRTY_AFTER" -gt 0 ]; then
+                    echo "Testing uncommitted changes..."
+                    if $TEST_CMD 2>&1; then
+                        echo "✓ Build passes! Auto-committing Claude's work..."
+                        git add -A
+                        git commit -m "Auto-commit: Claude Code changes that compile"
+                        git push
+                    else
+                        echo "✗ Build FAILS - reverting Claude's broken code..."
+                        git checkout -- .
+                        git clean -fd 2>/dev/null
+                    fi
+                fi
+                STUCK_COUNT=0
+            fi
+        fi
+    fi
+
+    # Periodic sanity check every 5 sessions (uses haiku to keep costs low)
+    if [ $((SESSION % 5)) -eq 0 ] && [ $SESSION -gt 0 ]; then
+        echo ""
+        echo "Running periodic sanity check (session $SESSION)..."
+        BUILD_CHECK=$($TEST_CMD 2>&1)
+        if echo "$BUILD_CHECK" | grep -qi "error\|failed"; then
+            echo "⚠ Sanity check found errors - calling Claude haiku to fix..."
+
+            # Run haiku non-interactively
+            timeout 120 claude --print --dangerously-skip-permissions --model haiku "
+Quick sanity check. Build/test is failing:
+
+$BUILD_CHECK
+
+Please fix any issues and ensure build passes. Be brief.
+"
+            # Verify and commit haiku's changes
+            DIRTY_HAIKU=$(git status --porcelain 2>/dev/null | wc -l)
+            if [ "$DIRTY_HAIKU" -gt 0 ]; then
+                if $TEST_CMD 2>&1; then
+                    echo "✓ Haiku fixed the build!"
+                    git add -A
+                    git commit -m "Auto-commit: Claude haiku build fix"
+                    git push
+                else
+                    echo "✗ Haiku's fix didn't work - reverting..."
+                    git checkout -- .
+                    git clean -fd 2>/dev/null
+                fi
+            fi
+        else
+            echo "✓ Sanity check passed"
         fi
     fi
 
