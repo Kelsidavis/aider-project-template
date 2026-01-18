@@ -95,20 +95,32 @@ while true; do
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
 
-    # CHECK BUILD STATUS BEFORE RUNNING AIDER
-    # If build is already broken, skip aider and go straight to Claude
+    # CHECK BUILD STATUS - tell aider about errors if any
     echo "Checking build status..."
     BUILD_PRE_CHECK=$($TEST_CMD 2>&1)
+    BUILD_ERRORS=$(echo "$BUILD_PRE_CHECK" | tail -30)
+
     if echo "$BUILD_PRE_CHECK" | grep -qi "error\|failed"; then
-        echo "⚠ Build is broken - skipping aider, escalating to Claude..."
-        STUCK_COUNT=2  # Force immediate Claude escalation
-        EXIT_CODE=0
+        echo "⚠ Build has errors - telling aider to fix them first..."
+        BUILD_STATUS_MSG="
+URGENT: The build is currently BROKEN. Fix these errors FIRST before doing anything else:
+
+\`\`\`
+$BUILD_ERRORS
+\`\`\`
+
+After fixing, run the build command to verify.
+"
     else
-        echo "✓ Build OK, running aider..."
-        # Don't pre-load source files - let aider discover via repo map
-        aider \
+        echo "✓ Build OK"
+        BUILD_STATUS_MSG=""
+    fi
+
+    # Don't pre-load source files - let aider discover via repo map
+    aider \
         "$INSTRUCTIONS_FILE" \
         --message "
+$BUILD_STATUS_MSG
 Read $INSTRUCTIONS_FILE. Work through unchecked [ ] items.
 
 NEXT TASKS:
@@ -173,7 +185,6 @@ Use WHOLE edit format - output complete file contents.
         }" >/dev/null 2>&1
         echo "Model loaded."
     fi
-    fi  # End of else block (aider ran)
 
     COMMITS_AFTER=$(git rev-list --count HEAD 2>/dev/null || echo "0")
     NEW_COMMITS=$((COMMITS_AFTER - COMMITS))
