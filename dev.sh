@@ -6,7 +6,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # === CONFIGURATION ===
 TEST_CMD="echo 'TODO: set your test command'"  # e.g., "RUSTFLAGS='-D warnings' cargo build --release"
-MODEL="qwen3-30b-aider:latest"  # Your ollama model name
+MODEL="llama3.1:64k"  # Llama 3.1 8B with 64k context - efficient and capable
 INSTRUCTIONS_FILE="INSTRUCTIONS.md"  # Your roadmap/instructions file
 PROJECT_NAME="MyProject"  # Used in planning session prompts
 
@@ -111,12 +111,18 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # === GPU SETUP ===
+# For multi-GPU systems, isolate to best GPU
+# Example: export GPU_UUID=1 for RTX 5080 on dual-GPU system
 if [ -n "$GPU_UUID" ]; then
+    export CUDA_DEVICE_ORDER=PCI_BUS_ID
     export CUDA_VISIBLE_DEVICES="$GPU_UUID"
+    export GPU_DEVICE_ORDINAL="$GPU_UUID"
 fi
 export OLLAMA_FLASH_ATTENTION=1
-export OLLAMA_KV_CACHE_TYPE=q8_0
-export OLLAMA_NUM_CTX=12288
+export OLLAMA_KV_CACHE_TYPE=q4_0  # q4_0 for efficiency, q8_0 for quality
+export OLLAMA_GPU_LAYERS=999  # Auto-detect optimal GPU layer count
+export OLLAMA_KEEP_ALIVE=-1  # Keep model loaded between requests
+# Note: 64k context configured in model itself, not via OLLAMA_NUM_CTX
 
 cd "$PROJECT_DIR"
 
@@ -299,9 +305,23 @@ After fixing, run the build command to verify.
     fi
 
     # Run aider with 15-minute timeout
+    # 8B model with 64k context budget:
+    #   - 16k map tokens (repo structure + summaries)
+    #   - 16k chat history (conversation memory)
+    #   - ~31k available for file content
+    # No file size limits - can read entire large files
     log "INFO" "Starting aider session"
     timeout 900 aider \
         "$INSTRUCTIONS_FILE" \
+        --model "ollama/$MODEL" \
+        --no-stream \
+        --yes \
+        --auto-commits \
+        --map-tokens 16384 \
+        --max-chat-history-tokens 16384 \
+        --env-file /dev/null \
+        --encoding utf-8 \
+        --show-model-warnings \
         --message "
 $BUILD_STATUS_MSG
 Read $INSTRUCTIONS_FILE. Work through unchecked [ ] items.
