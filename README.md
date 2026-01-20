@@ -6,11 +6,11 @@ Copy this directory to start a new aider-powered project with autonomous develop
 
 **Required:**
 - Ollama installed and running
-- Llama 3.1 8B model: `ollama pull llama3.1:8b`
+- Qwen2.5-Coder 14B model: `ollama pull qwen2.5-coder:14b`
 - Create 32k context model:
   ```bash
   cat > /tmp/Modelfile-llama31-32k << 'EOF'
-  FROM llama3.1:8b
+  FROM qwen2.5-coder:14b
   PARAMETER num_ctx 32768
   PARAMETER temperature 0.7
   EOF
@@ -43,7 +43,7 @@ Copy this directory to start a new aider-powered project with autonomous develop
 
 ## Current Configuration
 
-**Model:** Llama 3.1 8B (32k context)
+**Model:** Qwen2.5-Coder 14B (32k context)
 - 32 transformer layers, ~4.9GB base model (Q4_K_M quant)
 - Context budget: 8k map + 8k chat + ~15k for files
 - Can read 300-400 line files without truncation
