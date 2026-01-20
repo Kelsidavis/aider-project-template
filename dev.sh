@@ -119,7 +119,7 @@ if [ -n "$GPU_UUID" ]; then
     export GPU_DEVICE_ORDINAL="$GPU_UUID"
 fi
 export OLLAMA_FLASH_ATTENTION=1
-export OLLAMA_KV_CACHE_TYPE=f16  # f16 for max quality
+export OLLAMA_KV_CACHE_TYPE=q8_0  # q8_0 for stability (f16 causes OOM with ollama context auto-expansion)
 export OLLAMA_NUM_CTX=32768  # Force 32k context limit (prevents auto-expansion)
 export OLLAMA_GPU_LAYERS=999  # Auto-detect optimal GPU layer count
 export OLLAMA_KEEP_ALIVE=-1  # Keep model loaded between requests
