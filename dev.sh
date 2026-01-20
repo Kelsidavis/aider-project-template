@@ -305,11 +305,11 @@ After fixing, run the build command to verify.
     fi
 
     # Run aider with 15-minute timeout
-    # 8B model with 64k context budget:
-    #   - 8k map tokens (repo structure + summaries)
-    #   - 8k chat history (conversation memory)
-    #   - ~31k available for file content
-    # No file size limits - can read entire large files
+    # Qwen2.5-Coder 14B on 32k context with q8_0 KV cache
+    # Context budget: 26k max input (set in .aider.model.metadata.json)
+    #   - 2k map tokens (repo structure + file summaries)
+    #   - 4k chat history (conversation memory)
+    #   - ~20k available for actual file content
     log "INFO" "Starting aider session"
     timeout 900 aider \
         "$INSTRUCTIONS_FILE" \
@@ -317,8 +317,8 @@ After fixing, run the build command to verify.
         --no-stream \
         --yes \
         --auto-commits \
-        --map-tokens 4096 \
-        --max-chat-history-tokens 8192 \
+        --map-tokens 2048 \
+        --max-chat-history-tokens 4096 \
         --env-file /dev/null \
         --encoding utf-8 \
         --show-model-warnings \
