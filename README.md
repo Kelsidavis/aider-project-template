@@ -9,12 +9,12 @@ Copy this directory to start a new aider-powered project with autonomous develop
 - Qwen2.5-Coder 14B model: `ollama pull qwen2.5-coder:14b`
 - Create 32k context model:
   ```bash
-  cat > /tmp/Modelfile-llama31-32k << 'EOF'
+  cat > /tmp/Modelfile-qwen25-coder-32k << 'EOF'
   FROM qwen2.5-coder:14b
   PARAMETER num_ctx 32768
   PARAMETER temperature 0.7
   EOF
-  ollama create llama3.1:32k -f /tmp/Modelfile-llama31-32k
+  ollama create qwen2.5-coder:32k -f /tmp/Modelfile-qwen25-coder-32k
   ```
 
 **GPU:** RTX 5080 16GB or equivalent (requires ~10-11GB VRAM with f16 KV cache)
@@ -35,7 +35,7 @@ Copy this directory to start a new aider-powered project with autonomous develop
 
 ## Files
 
-- `.aider.conf.yml` - Aider configuration (model: llama3.1:32k, map-tokens: 8192, chat-history: 8192)
+- `.aider.conf.yml` - Aider configuration (model: qwen2.5-coder:32k, map-tokens: 8192, chat-history: 8192)
 - `.aider.model.metadata.json` - **CRITICAL:** Token limits (must match model name in config!)
 - `INSTRUCTIONS.md` - Project roadmap (tasks marked [x] or [ ])
 - `dev.sh` - Continuous development loop with ollama management
@@ -44,8 +44,8 @@ Copy this directory to start a new aider-powered project with autonomous develop
 ## Current Configuration
 
 **Model:** Qwen2.5-Coder 14B (32k context)
-- 32 transformer layers, ~4.9GB base model (Q4_K_M quant)
-- Context budget: 8k map + 8k chat + ~15k for files
+- 32 transformer layers, ~8.5GB base model (Q4_K_M quant)
+- Context budget: 4k map + 8k chat + ~12k for files
 - Can read 300-400 line files without truncation
 
 **Ollama Settings (in dev.sh):**
