@@ -6,7 +6,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # === CONFIGURATION ===
 TEST_CMD="echo 'TODO: set your test command'"  # e.g., "RUSTFLAGS='-D warnings' cargo build --release"
-MODEL="llama3.1:64k"  # Llama 3.1 8B with 64k context - efficient and capable
+MODEL="llama3.1:32k"  # Llama 3.1 8B with 32k context - efficient and capable
 INSTRUCTIONS_FILE="INSTRUCTIONS.md"  # Your roadmap/instructions file
 PROJECT_NAME="MyProject"  # Used in planning session prompts
 
@@ -306,8 +306,8 @@ After fixing, run the build command to verify.
 
     # Run aider with 15-minute timeout
     # 8B model with 64k context budget:
-    #   - 16k map tokens (repo structure + summaries)
-    #   - 16k chat history (conversation memory)
+    #   - 8k map tokens (repo structure + summaries)
+    #   - 8k chat history (conversation memory)
     #   - ~31k available for file content
     # No file size limits - can read entire large files
     log "INFO" "Starting aider session"
@@ -317,8 +317,8 @@ After fixing, run the build command to verify.
         --no-stream \
         --yes \
         --auto-commits \
-        --map-tokens 16384 \
-        --max-chat-history-tokens 16384 \
+        --map-tokens 8192 \
+        --max-chat-history-tokens 8192 \
         --env-file /dev/null \
         --encoding utf-8 \
         --show-model-warnings \
