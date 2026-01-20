@@ -26,3 +26,4 @@ Thumbs.db
 *.pem
 *.key
 credentials.json
+dev.log
