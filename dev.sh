@@ -317,8 +317,8 @@ After fixing, run the build command to verify.
         --no-stream \
         --yes \
         --auto-commits \
-        --map-tokens 8192 \
-        --max-chat-history-tokens 8192 \
+        --map-tokens 2048 \
+        --max-chat-history-tokens 4096 \
         --env-file /dev/null \
         --encoding utf-8 \
         --show-model-warnings \
