@@ -7,7 +7,7 @@ auto-test: true
 test-cmd: echo "TODO: Add your build/test command here"
 suggest-shell-commands: true
 map-tokens: 2048
-max-chat-history-tokens: 8000
+max-chat-history-tokens: 4096
 attribute-author: false
 attribute-committer: false
 dark-mode: true
