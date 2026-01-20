@@ -120,9 +120,9 @@ if [ -n "$GPU_UUID" ]; then
 fi
 export OLLAMA_FLASH_ATTENTION=1
 export OLLAMA_KV_CACHE_TYPE=q8_0  # q8_0 for quality (use q4_0 if VRAM constrained)
+export OLLAMA_NUM_CTX=32768  # Force 32k context limit (prevents auto-expansion)
 export OLLAMA_GPU_LAYERS=999  # Auto-detect optimal GPU layer count
 export OLLAMA_KEEP_ALIVE=-1  # Keep model loaded between requests
-# Note: 64k context configured in model itself, not via OLLAMA_NUM_CTX
 
 cd "$PROJECT_DIR"
 
