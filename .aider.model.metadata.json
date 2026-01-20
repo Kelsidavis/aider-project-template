@@ -1,6 +1,6 @@
 {
-  "ollama/qwen3-30b-aider:latest": {
-    "max_input_tokens": 12288,
+  "ollama/llama3.1:32k": {
+    "max_input_tokens": 20480,
     "max_output_tokens": 4096
   }
 }
