@@ -6,7 +6,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # === CONFIGURATION ===
 TEST_CMD="echo 'TODO: set your test command'"  # e.g., "RUSTFLAGS='-D warnings' cargo build --release"
-MODEL="llama3.1:32k"  # Llama 3.1 8B with 32k context - efficient and capable
+MODEL="llama3.1:24k"  # Llama 3.1 8B with 24k context - efficient and capable
 INSTRUCTIONS_FILE="INSTRUCTIONS.md"  # Your roadmap/instructions file
 PROJECT_NAME="MyProject"  # Used in planning session prompts
 
@@ -317,8 +317,8 @@ After fixing, run the build command to verify.
         --no-stream \
         --yes \
         --auto-commits \
-        --map-tokens 8192 \
-        --max-chat-history-tokens 8192 \
+        --map-tokens 6144 \
+        --max-chat-history-tokens 6144 \
         --env-file /dev/null \
         --encoding utf-8 \
         --show-model-warnings \
