@@ -36,6 +36,7 @@ Copy this directory to start a new aider-powered project with autonomous develop
 ## Files
 
 - `.aider.conf.yml` - Aider configuration (model: llama3.1:32k, map-tokens: 8192, chat-history: 8192)
+- `.aider.model.metadata.json` - **CRITICAL:** Token limits (must match model name in config!)
 - `INSTRUCTIONS.md` - Project roadmap (tasks marked [x] or [ ])
 - `dev.sh` - Continuous development loop with ollama management
 - `.gitignore` - Git ignore patterns (includes dev.log)
@@ -48,14 +49,21 @@ Copy this directory to start a new aider-powered project with autonomous develop
 - Can read 300-400 line files without truncation
 
 **Ollama Settings (in dev.sh):**
-- `OLLAMA_KV_CACHE_TYPE=f16` - Maximum quality KV cache
-- `OLLAMA_NUM_CTX=32768` - 32k context (note: ollama may auto-expand to ~47k)
+- `OLLAMA_KV_CACHE_TYPE=q8_0` - Quantized KV cache for stability (prevents OOM when ollama auto-expands context)
+- `OLLAMA_NUM_CTX=32768` - 32k context (note: ollama may auto-expand to ~52k)
 - `OLLAMA_FLASH_ATTENTION=1` - Memory optimization
 - `OLLAMA_GPU_LAYERS=999` - Load all 32 layers on GPU
 
-**VRAM Usage:** ~10-11GB with f16 KV cache at 32k context
+**Aider Token Limits (.aider.model.metadata.json):**
+- `max_input_tokens: 20480` - Caps context at 20k input (prevents overwhelming 8B model)
+- `max_output_tokens: 4096` - Limits response length
+- **CRITICAL:** Model name in this file MUST exactly match `.aider.conf.yml` or aider ignores limits → hallucinations
 
-**Known Issue:** Ollama ignores OLLAMA_NUM_CTX and may auto-expand context. This is a known ollama quirk. For strict context control, consider llama.cpp server or vLLM.
+**VRAM Usage:** ~12GB with q8_0 KV cache at ~52k context (ollama auto-expansion)
+
+**Known Issues:**
+- Ollama ignores OLLAMA_NUM_CTX and auto-expands to ~52k despite 32k setting
+- For strict context control, consider llama.cpp server or vLLM
 
 ## Example test-cmd by language
 
